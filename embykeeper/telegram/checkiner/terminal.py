@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import os
 import time
 import urllib.error
 import urllib.request
@@ -48,7 +49,14 @@ def extract_text_from_response(data: dict) -> str:
     return ""
 
 
-def call_qwen3_5_plus(
+def build_chat_completions_url(base_url: str) -> str:
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/chat/completions"):
+        return normalized
+    return normalized + "/chat/completions"
+
+
+def call_ai_chat_completion(
     prompt: str,
     image_base64: str,
     base_url: str,
@@ -73,7 +81,7 @@ def call_qwen3_5_plus(
         "stream": False,
     }
 
-    url = base_url.rstrip("/") + "/chat/completions"
+    url = build_chat_completions_url(base_url)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -83,15 +91,15 @@ def call_qwen3_5_plus(
     if log:
         masked_api_key = f"{api_key[:6]}...{api_key[-4:]}" if len(api_key) > 10 else "***"
         log.debug(
-            "call_qwen3_5_plus request meta: "
+            "call_ai_chat_completion request meta: "
             f"url={url}, model={model}, image_mime={image_mime}, timeout={timeout}, "
             f"prompt_len={len(prompt)}, image_base64_len={len(image_base64)}, data_url_len={len(data_url)}"
         )
         log.debug(
-            "call_qwen3_5_plus request headers: "
+            "call_ai_chat_completion request headers: "
             f"Authorization=Bearer {masked_api_key}, Content-Type={headers['Content-Type']}"
         )
-        log.debug(f"call_qwen3_5_plus request payload: {payload_json}")
+        log.debug(f"call_ai_chat_completion request payload: {payload_json}")
 
     request = urllib.request.Request(
         url=url,
@@ -109,32 +117,32 @@ def call_qwen3_5_plus(
             raw = response.read().decode("utf-8")
             if log:
                 log.debug(
-                    f"call_qwen3_5_plus response meta: status={status}, "
+                    f"call_ai_chat_completion response meta: status={status}, "
                     f"elapsed_ms={elapsed_ms:.2f}, headers={response_headers}"
                 )
-                log.debug(f"call_qwen3_5_plus response raw: {raw}")
+                log.debug(f"call_ai_chat_completion response raw: {raw}")
             data = json.loads(raw)
             if log:
-                log.debug(f"call_qwen3_5_plus response parsed: {json.dumps(data, ensure_ascii=False)}")
+                log.debug(f"call_ai_chat_completion response parsed: {json.dumps(data, ensure_ascii=False)}")
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         if log:
             log.warning(
-                f"call_qwen3_5_plus HTTPError: code={exc.code}, reason={exc.reason}, "
+                f"call_ai_chat_completion HTTPError: code={exc.code}, reason={exc.reason}, "
                 f"url={url}, body={body}"
             )
         raise RuntimeError(f"HTTP error {exc.code}: {body}") from exc
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         if log:
-            log.warning(f"call_qwen3_5_plus request failed: {exc.__class__.__name__}: {exc}")
+            log.warning(f"call_ai_chat_completion request failed: {exc.__class__.__name__}: {exc}")
         raise RuntimeError(f"Request failed: {exc}") from exc
 
     text = extract_text_from_response(data).strip()
     if log:
-        log.debug(f"call_qwen3_5_plus extracted text: {text}")
+        log.debug(f"call_ai_chat_completion extracted text: {text}")
     if not text:
         if log:
-            log.debug("call_qwen3_5_plus extracted text is empty, returning full parsed response JSON.")
+            log.debug("call_ai_chat_completion extracted text is empty, returning full parsed response JSON.")
         return json.dumps(data, ensure_ascii=False, indent=2)
 
     return text
@@ -154,17 +162,30 @@ class TerminalCheckin(AnswerBotCheckin):
         value = (self.config or {}).get(key)
         if value is None:
             value = getattr(global_config.checkiner, key, None)
+        if not value:
+            if key == "ai_api_key":
+                value = os.environ.get("MODELSCOPE_ACCESS_TOKEN", "") or os.environ.get("MODELSCOPE_API_KEY", "")
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f'缺少必要配置: checkiner.{key}')
         return value.strip()
 
-    def _get_qwen_base_url(self) -> str:
-        return self._get_required_ai_config("ai_base_url")
+    def _get_ai_base_url(self) -> str:
+        value = (self.config or {}).get("ai_base_url")
+        if value is None:
+            value = getattr(global_config.checkiner, "ai_base_url", None)
+        if not isinstance(value, str) or not value.strip():
+            return "https://api-inference.modelscope.cn/v1"
+        return value.strip()
 
-    def _get_qwen_model(self) -> str:
-        return self._get_required_ai_config("ai_model")
+    def _get_ai_model(self) -> str:
+        value = (self.config or {}).get("ai_model")
+        if value is None:
+            value = getattr(global_config.checkiner, "ai_model", None)
+        if not isinstance(value, str) or not value.strip():
+            return "moonshotai/Kimi-K2.5"
+        return value.strip()
 
-    def _get_qwen_api_key(self) -> str:
+    def _get_ai_api_key(self) -> str:
         return self._get_required_ai_config("ai_api_key")
 
     async def on_photo(self, message: Message):
@@ -199,12 +220,12 @@ class TerminalCheckin(AnswerBotCheckin):
             )
             result = (
                 await asyncio.to_thread(
-                    call_qwen3_5_plus,
+                    call_ai_chat_completion,
                     prompt=prompt,
                     image_base64=image_base64,
-                    base_url=self._get_qwen_base_url(),
-                    model=self._get_qwen_model(),
-                    api_key=self._get_qwen_api_key(),
+                    base_url=self._get_ai_base_url(),
+                    model=self._get_ai_model(),
+                    api_key=self._get_ai_api_key(),
                     log=self.log,
                 )
             ).strip()
