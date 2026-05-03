@@ -1,5 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta
+import json
+import os
 import random
 import re
 from abc import ABC, abstractmethod
@@ -7,6 +9,8 @@ from contextlib import asynccontextmanager
 from enum import Flag, auto
 import string
 import time
+import urllib.error
+import urllib.request
 from typing import Iterable, List, Optional, Union
 
 from loguru import logger
@@ -38,6 +42,92 @@ from embykeeper.telegram.link import Link
 __ignore__ = True
 
 logger = logger.bind(scheme="telechecker")
+
+
+def _build_chat_completions_url(base_url: str) -> str:
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/chat/completions"):
+        return normalized
+    return normalized + "/chat/completions"
+
+
+def _extract_text_from_response(data: dict) -> str:
+    choices = data.get("choices", [])
+    if not choices:
+        return ""
+    message = choices[0].get("message", {})
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_parts = []
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("type") == "text" and isinstance(part.get("text"), str):
+                    text_parts.append(part["text"])
+                elif isinstance(part.get("content"), str):
+                    text_parts.append(part["content"])
+        return "\n".join(text_parts).strip()
+    return ""
+
+
+def _call_ai_chat_completion(
+    prompt: str,
+    base_url: str,
+    model: str,
+    api_key: str,
+    image_base64: str = None,
+    image_mime: str = "image/jpeg",
+    timeout: float = 60.0,
+    log=None,
+) -> str:
+    if image_base64:
+        import base64
+        image_base64 = image_base64.strip()
+        if not image_base64.startswith("data:"):
+            base64.b64decode(image_base64, validate=True)
+            data_url = f"data:{image_mime};base64,{image_base64}"
+        else:
+            data_url = image_base64
+        content = [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": data_url}},
+        ]
+    else:
+        content = prompt
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": content}],
+        "stream": False,
+    }
+    url = _build_chat_completions_url(base_url)
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload_json = json.dumps(payload, ensure_ascii=False)
+    if log:
+        masked = f"{api_key[:6]}...{api_key[-4:]}" if len(api_key) > 10 else "***"
+        img_len = len(image_base64) if image_base64 else 0
+        log.debug(f"call_ai_chat_completion: url={url}, model={model}, has_image={image_base64 is not None}, img_len={img_len}, auth=Bearer {masked}")
+    request = urllib.request.Request(url=url, data=payload_json.encode("utf-8"), headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+            data = json.loads(raw)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        if log:
+            log.warning(f"call_ai_chat_completion HTTP error {exc.code}: {body}")
+        raise RuntimeError(f"HTTP error {exc.code}: {body}") from exc
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        if log:
+            log.warning(f"call_ai_chat_completion failed: {exc}")
+        raise RuntimeError(f"Request failed: {exc}") from exc
+    text = _extract_text_from_response(data).strip()
+    if not text:
+        return json.dumps(data, ensure_ascii=False, indent=2)
+    return text
 
 default_keywords = {
     "account_fail": (
@@ -618,6 +708,50 @@ class BotCheckin(BaseBotCheckin):
     async def on_unexpected_text(self, message: Message):
         return await self.gpt_handle_message(message, unexpected=True)
 
+    def _get_ai_base_url(self) -> Optional[str]:
+        value = (self.config or {}).get("ai_base_url")
+        if value is None:
+            value = getattr(config.checkiner, "ai_base_url", None)
+        if not isinstance(value, str) or not value.strip():
+            return None
+        return value.strip()
+
+    def _get_ai_model(self) -> Optional[str]:
+        value = (self.config or {}).get("ai_model")
+        if value is None:
+            value = getattr(config.checkiner, "ai_model", None)
+        if not isinstance(value, str) or not value.strip():
+            return None
+        return value.strip()
+
+    def _get_ai_api_key(self) -> Optional[str]:
+        value = (self.config or {}).get("ai_api_key")
+        if value is None:
+            value = getattr(config.checkiner, "ai_api_key", None)
+        if not value:
+            value = os.environ.get("MODELSCOPE_ACCESS_TOKEN", "") or os.environ.get("MODELSCOPE_API_KEY", "")
+        if not isinstance(value, str) or not value.strip():
+            return None
+        return value.strip()
+
+    def _has_ai_config(self) -> bool:
+        return bool(self._get_ai_base_url() and self._get_ai_api_key())
+
+    async def _call_local_ai(self, prompt: str) -> Optional[str]:
+        try:
+            result = await asyncio.to_thread(
+                _call_ai_chat_completion,
+                prompt=prompt,
+                base_url=self._get_ai_base_url(),
+                model=self._get_ai_model(),
+                api_key=self._get_ai_api_key(),
+                log=self.log,
+            )
+            return result.strip() if result else None
+        except Exception as e:
+            self.log.debug(f"本地 AI 调用失败: {e.__class__.__name__}: {e}")
+            return None
+
     async def gpt_handle_message(self, message: Message, unexpected: bool = True):
         content = message.text or message.caption
         if content:
@@ -651,8 +785,18 @@ class BotCheckin(BaseBotCheckin):
                 "不要说明这是一个指令, 不要说明需要发送文本消息, 仅仅按上述形式输出.\n"
                 "如果这是一个状态, 请输出 [IS_STATUS], 禁止输出其他内容."
             )
-            for _ in range(3):
-                answer, by = await Link(self.client).gpt(prompt)
+            # 优先使用本地 AI, 失败时回退到 Link.gpt
+            use_local_ai = self._has_ai_config()
+            for attempt in range(3):
+                answer = None
+                by = None
+                if use_local_ai:
+                    self.log.debug(f"正在使用本地 AI 模型: {prompt}")
+                    answer = await self._call_local_ai(prompt)
+                    by = "local_ai"
+                if not answer:
+                    use_local_ai = False
+                    answer, by = await Link(self.client).gpt(prompt)
                 if answer:
                     self.log.debug(f"智能回答 ({by}): {answer}")
                     if "[NO_RESP]" in answer:
