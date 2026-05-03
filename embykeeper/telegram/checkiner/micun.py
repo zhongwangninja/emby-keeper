@@ -12,6 +12,7 @@ class MICUNCheckin(BotCheckin):
     bot_username = "micu_user_bot"
     bot_checkin_cmd = "/start"
     bot_checked_keywords = ["已经签到过了"]
+    bot_use_captcha = False
     max_retries = 1
 
     async def message_handler(self, client, message: Message):
