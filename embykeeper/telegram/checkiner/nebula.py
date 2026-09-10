@@ -1,16 +1,13 @@
 from json import JSONDecodeError
-from urllib.parse import parse_qs, urlparse
 from datetime import datetime, timezone
 
-from curl_cffi.requests import AsyncSession, RequestsError
-from pyrogram.raw.functions.messages import RequestWebView
-from pyrogram.raw.functions.users import GetFullUser
+from curl_cffi.requests import RequestsError
 
 from embykeeper.runinfo import RunStatus
-from embykeeper.utils import format_timedelta_human, get_proxy_str, show_exception
-from embykeeper.config import config
+from embykeeper.utils import format_timedelta_human, show_exception
 
 from . import BotCheckin
+from ._webapp import get_webview_auth, load_webapp_page, webapp_fetch_headers, webapp_session
 
 
 class NebulaCheckin(BotCheckin):
@@ -20,32 +17,20 @@ class NebulaCheckin(BotCheckin):
     additional_auth = ["prime"]
 
     async def send_checkin(self, **kw):
-        bot_peer = await self.client.resolve_peer(self.bot_username)
-        user_full = await self.client.invoke(GetFullUser(id=bot_peer))
-        url = user_full.full_user.bot_info.menu_button.url
-        url_auth = (
-            await self.client.invoke(RequestWebView(peer=bot_peer, bot=bot_peer, platform="ios", url=url))
-        ).url
-        scheme = urlparse(url_auth)
-        params = parse_qs(scheme.fragment)
-        webapp_data = params.get("tgWebAppData", [""])[0]
+        auth = await get_webview_auth(self.client, self.bot_username)
 
-        parsed_url = urlparse(url_auth)
-        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-        url_info = f"{base_url}/api/v1/tg/info"
-        url_checkin = f"{base_url}/api/v1/tg/checkin"
+        url_info = f"{auth.base_url}/api/v1/tg/info"
+        url_checkin = f"{auth.base_url}/api/v1/tg/checkin"
 
-        headers = {"X-Initdata": webapp_data}
+        headers = webapp_fetch_headers(auth.base_url, extra={"X-Initdata": auth.data})
 
         try:
-            async with AsyncSession(
-                proxy=get_proxy_str(config.proxy, curl=True),
-                headers=headers,
-                impersonate="edge",
-                allow_redirects=True,
-            ) as session:
+            async with webapp_session() as session:
+                # 模拟小程序 WebView 首次加载页面
+                await load_webapp_page(session, auth.page_url)
+
                 # 先获取用户信息
-                resp_info = await session.get(url_info)
+                resp_info = await session.get(url_info, headers=headers)
                 info_results = resp_info.json()
 
                 if info_results.get("message") != "Success":
@@ -78,7 +63,7 @@ class NebulaCheckin(BotCheckin):
                         return await self.finish(RunStatus.NONEED, "今日已签到")
 
                 # 执行签到
-                resp = await session.post(url_checkin)
+                resp = await session.post(url_checkin, headers=headers)
                 results = resp.json()
                 message = results["message"]
                 if any(s in message for s in ("未找到用户", "权限错误")):
