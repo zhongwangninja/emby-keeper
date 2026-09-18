@@ -169,8 +169,8 @@ def call_ai_chat_completion(
 
 class TerminalCheckin(AnswerBotCheckin):
     name = "终点站 AI"
-    # bot_username = "EmbyPublicBot"
-    bot_username = "my_annunciator_boards_bot"
+    bot_username = "EmbyPublicBot"
+    # bot_username = "my_annunciator_boards_bot"
     bot_checkin_cmd = ["/checkin"]
     bot_text_ignore = ["会话已取消", "没有活跃的会话"]
     bot_checked_keywords = ["今天已签到"]
@@ -252,7 +252,6 @@ class TerminalCheckin(AnswerBotCheckin):
                 )
                 raw = None
 
-            raw = "调试"
             matched = match_inline_option(raw, options) if raw else None
             if matched:
                 self.log.info(f"{label} 解析答案: {matched}.")
