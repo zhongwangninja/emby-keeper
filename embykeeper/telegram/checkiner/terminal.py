@@ -49,6 +49,25 @@ def extract_text_from_response(data: dict) -> str:
     return ""
 
 
+def match_inline_option(result: str, options: list) -> str:
+    """将 AI 返回值匹配到某一个 inline keyboard 选项；无法唯一匹配则返回 None."""
+    if not result or not options:
+        return None
+
+    text = result.strip()
+    if text in options:
+        return text
+
+    cleaned = text.strip("“”\"'。．.：:，, \n\t")
+    if cleaned in options:
+        return cleaned
+
+    matches = [option for option in options if option and option in text]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def build_chat_completions_url(base_url: str) -> str:
     normalized = base_url.rstrip("/")
     if normalized.endswith("/chat/completions"):
@@ -150,7 +169,8 @@ def call_ai_chat_completion(
 
 class TerminalCheckin(AnswerBotCheckin):
     name = "终点站 AI"
-    bot_username = "EmbyPublicBot"
+    # bot_username = "EmbyPublicBot"
+    bot_username = "my_annunciator_boards_bot"
     bot_checkin_cmd = ["/checkin"]
     bot_text_ignore = ["会话已取消", "没有活跃的会话"]
     bot_checked_keywords = ["今天已签到"]
@@ -218,18 +238,47 @@ class TerminalCheckin(AnswerBotCheckin):
                 "请观察图片内容，从以下选项中选出图片中出现的物品，只返回该物品的名称，"
                 f"不要返回任何其他文字。\n\n选项：{'/'.join(options)}"
             )
-            result = (
-                await asyncio.to_thread(
-                    call_ai_chat_completion,
-                    prompt=prompt,
-                    image_base64=image_base64,
-                    base_url=self._get_ai_base_url(),
-                    model=self._get_ai_model(),
-                    api_key=self._get_ai_api_key(),
-                    log=self.log,
-                )
-            ).strip()
-            self.log.info(f"AI 解析答案: {result}.")
+
+            result = None
+            max_attempts = 3  # 首次调用 + 两次重试
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    raw = (
+                        await asyncio.to_thread(
+                            call_ai_chat_completion,
+                            prompt=prompt,
+                            image_base64=image_base64,
+                            base_url=self._get_ai_base_url(),
+                            model=self._get_ai_model(),
+                            api_key=self._get_ai_api_key(),
+                            log=self.log,
+                        )
+                    ).strip()
+                except Exception as e:
+                    self.log.warning(
+                        f"AI 调用失败 ({attempt}/{max_attempts}): {e.__class__.__name__}: {e}"
+                    )
+                    raw = None
+                raw = '调试选项'
+
+                matched = match_inline_option(raw, options) if raw else None
+                if matched:
+                    result = matched
+                    self.log.info(f"AI 解析答案: {result}.")
+                    break
+
+                if raw:
+                    self.log.warning(
+                        f"AI 返回结果不符合选项 ({attempt}/{max_attempts}): {raw!r}, 选项={options}"
+                    )
+                if attempt < max_attempts:
+                    self.log.info("等待 1 秒后进行下一次重试...")
+                    await asyncio.sleep(1)
+
+            if not result:
+                self.log.warning("签到失败: AI 识别错误.")
+                return await self.fail()
+
             await message.click(result)
         except RPCError:
             self.log.warning("按钮点击失败.")
