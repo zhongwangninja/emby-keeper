@@ -189,24 +189,84 @@ class TerminalCheckin(AnswerBotCheckin):
             raise ValueError(f'缺少必要配置: checkiner.{key}')
         return value.strip()
 
-    def _get_ai_base_url(self) -> str:
-        value = (self.config or {}).get("ai_base_url")
+    def _get_optional_ai_config(self, key: str, default: str = None) -> str:
+        value = (self.config or {}).get(key)
         if value is None:
-            value = getattr(global_config.checkiner, "ai_base_url", None)
+            value = getattr(global_config.checkiner, key, None)
         if not isinstance(value, str) or not value.strip():
-            return "https://api-inference.modelscope.cn/v1"
+            return default
         return value.strip()
 
+    def _get_ai_base_url(self) -> str:
+        return self._get_optional_ai_config("ai_base_url", "https://api-inference.modelscope.cn/v1")
+
     def _get_ai_model(self) -> str:
-        value = (self.config or {}).get("ai_model")
-        if value is None:
-            value = getattr(global_config.checkiner, "ai_model", None)
-        if not isinstance(value, str) or not value.strip():
-            return "moonshotai/Kimi-K2.5"
-        return value.strip()
+        return self._get_optional_ai_config("ai_model", "moonshotai/Kimi-K2.5")
 
     def _get_ai_api_key(self) -> str:
         return self._get_required_ai_config("ai_api_key")
+
+    def _get_ai_secondary_base_url(self) -> str:
+        return self._get_optional_ai_config("ai_secondary_base_url")
+
+    def _get_ai_secondary_model(self) -> str:
+        return self._get_optional_ai_config("ai_secondary_model")
+
+    def _get_ai_secondary_api_key(self) -> str:
+        return self._get_optional_ai_config("ai_secondary_api_key")
+
+    def _has_secondary_ai(self) -> bool:
+        return bool(
+            self._get_ai_secondary_base_url()
+            and self._get_ai_secondary_model()
+            and self._get_ai_secondary_api_key()
+        )
+
+    async def _try_ai_with_retry(
+        self,
+        prompt: str,
+        image_base64: str,
+        options: list,
+        base_url: str,
+        model: str,
+        api_key: str,
+        label: str,
+        max_attempts: int = 3,
+    ) -> str:
+        for attempt in range(1, max_attempts + 1):
+            try:
+                raw = (
+                    await asyncio.to_thread(
+                        call_ai_chat_completion,
+                        prompt=prompt,
+                        image_base64=image_base64,
+                        base_url=base_url,
+                        model=model,
+                        api_key=api_key,
+                        log=self.log,
+                    )
+                ).strip()
+            except Exception as e:
+                self.log.warning(
+                    f"{label} 调用失败 ({attempt}/{max_attempts}): {e.__class__.__name__}: {e}"
+                )
+                raw = None
+
+            raw = "调试"
+            matched = match_inline_option(raw, options) if raw else None
+            if matched:
+                self.log.info(f"{label} 解析答案: {matched}.")
+                return matched
+
+            if raw:
+                self.log.warning(
+                    f"{label} 返回结果不符合选项 ({attempt}/{max_attempts}): {raw!r}, 选项={options}"
+                )
+            if attempt < max_attempts:
+                self.log.info(f"{label} 等待 2 秒后进行下一次重试...")
+                await asyncio.sleep(2)
+
+        return None
 
     async def on_photo(self, message: Message):
         """分析传入的验证码图片并点击匹配选项."""
@@ -239,41 +299,29 @@ class TerminalCheckin(AnswerBotCheckin):
                 f"不要返回任何其他文字。\n\n选项：{'/'.join(options)}"
             )
 
-            result = None
-            max_attempts = 3  # 首次调用 + 两次重试
-            for attempt in range(1, max_attempts + 1):
-                try:
-                    raw = (
-                        await asyncio.to_thread(
-                            call_ai_chat_completion,
-                            prompt=prompt,
-                            image_base64=image_base64,
-                            base_url=self._get_ai_base_url(),
-                            model=self._get_ai_model(),
-                            api_key=self._get_ai_api_key(),
-                            log=self.log,
-                        )
-                    ).strip()
-                except Exception as e:
-                    self.log.warning(
-                        f"AI 调用失败 ({attempt}/{max_attempts}): {e.__class__.__name__}: {e}"
-                    )
-                    raw = None
-                raw = '调试选项'
+            result = await self._try_ai_with_retry(
+                prompt=prompt,
+                image_base64=image_base64,
+                options=options,
+                base_url=self._get_ai_base_url(),
+                model=self._get_ai_model(),
+                api_key=self._get_ai_api_key(),
+                label="AI",
+            )
 
-                matched = match_inline_option(raw, options) if raw else None
-                if matched:
-                    result = matched
-                    self.log.info(f"AI 解析答案: {result}.")
-                    break
-
-                if raw:
-                    self.log.warning(
-                        f"AI 返回结果不符合选项 ({attempt}/{max_attempts}): {raw!r}, 选项={options}"
-                    )
-                if attempt < max_attempts:
-                    self.log.info("等待 1 秒后进行下一次重试...")
-                    await asyncio.sleep(1)
+            if not result and self._has_secondary_ai():
+                self.log.warning("主 AI 三次调用均失败, 切换到备用 AI.")
+                result = await self._try_ai_with_retry(
+                    prompt=prompt,
+                    image_base64=image_base64,
+                    options=options,
+                    base_url=self._get_ai_secondary_base_url(),
+                    model=self._get_ai_secondary_model(),
+                    api_key=self._get_ai_secondary_api_key(),
+                    label="备用 AI",
+                )
+            elif not result:
+                self.log.warning("主 AI 三次调用均失败, 且未配置备用 AI.")
 
             if not result:
                 self.log.warning("签到失败: AI 识别错误.")
