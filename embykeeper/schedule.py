@@ -85,17 +85,7 @@ class Scheduler:
         self.func = func
         self.interval_hours = None
         if interval_hours is not None:
-            if (
-                not isinstance(interval_hours, (list, tuple))
-                or len(interval_hours) != 2
-                or any(
-                    isinstance(h, bool) or not isinstance(h, (int, float)) or not math.isfinite(h) or h <= 0
-                    for h in interval_hours
-                )
-                or interval_hours[0] > interval_hours[1]
-            ):
-                raise ValueError("interval_hours 必须为两个正数组成的范围, 如 [48, 60], 且下限不能大于上限")
-            self.interval_hours = list(interval_hours)
+            self.interval_hours = self.validate_interval_hours(interval_hours)
         if config.debug_cron:
             logger.warning(f"计划任务调试模式下任务开始时间被调整为10秒后: {description}")
             debug_time = (datetime.now() + timedelta(seconds=10)).time()
@@ -113,6 +103,20 @@ class Scheduler:
         self._cache_key = f"scheduler.{sid}" if sid else None
         self._next_time = None
         self._ctx: RunContext = None
+
+    @staticmethod
+    def validate_interval_hours(interval_hours):
+        if (
+            not isinstance(interval_hours, (list, tuple))
+            or len(interval_hours) != 2
+            or any(
+                isinstance(h, bool) or not isinstance(h, (int, float)) or not math.isfinite(h) or h <= 0
+                for h in interval_hours
+            )
+            or interval_hours[0] > interval_hours[1]
+        ):
+            raise ValueError("interval_hours 必须为两个正数组成的范围, 如 [48, 60], 且下限不能大于上限")
+        return list(interval_hours)
 
     def _parse_time(self, t):
         if isinstance(t, str):

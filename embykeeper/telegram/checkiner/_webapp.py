@@ -17,8 +17,7 @@ from curl_cffi.requests import AsyncSession, RequestsError
 from pyrogram.raw.functions.messages import RequestWebView
 from pyrogram.raw.functions.users import GetFullUser
 
-from embykeeper.config import config
-from embykeeper.utils import get_proxy_str
+from .. import get_telegram_proxy_str
 
 __ignore__ = True
 
@@ -52,7 +51,7 @@ async def get_webview_auth(client, bot_username: str, platform: str = "ios") -> 
 
 def webapp_session(**kw) -> AsyncSession:
     """构造模拟 iOS Telegram 小程序 WebView 的会话 (TLS 指纹与 UA 层伪装)."""
-    kw.setdefault("proxy", get_proxy_str(config.proxy, curl=True))
+    kw.setdefault("proxy", get_telegram_proxy_str(curl=True))
     kw.setdefault("impersonate", "safari184_ios")
     kw.setdefault("allow_redirects", True)
     headers = {

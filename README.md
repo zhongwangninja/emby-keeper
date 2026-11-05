@@ -29,7 +29,7 @@ Embykeeper 是一个 Emby 影视服务器签到保号的自动执行工具, 它�
 
 4. **便捷的二次开发** - 基于 Pyrogram 开发, 提供了一套便捷的框架来实现新的签到器.
 
-项目支持 Python 运行、Docker 部署或云部署, 且完全开源, 不存储任何密钥或隐私信息, 经两年的开发已经在稳定和安全性方面有一定保证.
+项目提供网页管理面板, 也支持命令行运行与云部署, 且完全开源, 不存储任何密钥或隐私信息, 经两年的开发已经在稳定和安全性方面有一定保证.
 
 ## 声明
 
@@ -43,7 +43,7 @@ Embykeeper 将自动向 Embykeeper Auth Bot ([@embykeeper_auth_bot](https://t.me
 
 ## 安装与使用
 
-Embykeeper 支持 Docker 或 PyPI 安装 (Linux / Windows), 也支持云部署, 请点击下方按钮开始部署:
+Embykeeper 支持 Docker、PyPI 与 Windows 安装包, 也支持云部署, 请点击下方按钮开始部署:
 
 [![Setup Tutorial](https://github.com/emby-keeper/emby-keeper/raw/main/images/setup-button.svg)](https://emby-keeper.github.io/guide/安装指南)
 
@@ -51,15 +51,33 @@ Embykeeper 支持 Docker 或 PyPI 安装 (Linux / Windows), 也支持云部署, 
 
 [![Deploy to Huggingface Space](https://github.com/emby-keeper/emby-keeper/raw/main/images/deploy-to-hf.svg)](https://huggingface.co/spaces/ekuser/ek?duplicate=true)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[![Tutorial](https://github.com/emby-keeper/emby-keeper/raw/main/images/hf-tutorial.svg)](https://blog.zetx.tech/2024/05/19/embykeeper-hf-tutorial/)
 
-若您有服务器, 我们推荐使用 [Docker 部署](https://emby-keeper.github.io/guide/Linux-Docker-部署):
+Windows 用户可以使用 [Windows 面板安装](https://emby-keeper.github.io/guide/Windows-面板安装)。
+
+若您有服务器, 可以使用 [面板模式部署](https://emby-keeper.github.io/guide/面板模式部署). 必须将下面的 `your-password` 换成自己的登录密码，否则程序会拒绝启动:
+
+```bash
+mkdir -p ~/embykeeper/data
+docker run -d --name embykeeper-panel \
+  --restart unless-stopped \
+  -e EK_WEBPASS='your-password' \
+  -p 8000:8000 \
+  -v "$HOME/embykeeper/data:/app" \
+  embykeeper/embykeeper:latest
+```
+
+之后访问 `http://<服务器地址>:8000`, 即可在界面中完成 Telegram 登录、账号管理与任务配置.
+
+如果服务器或平台没有持久磁盘 (例如 Koyeb、Render 免费层), 加上 `-e EK_MONGODB='mongodb://用户名:密码@主机:27017/embykeeper'` 即可把配置、缓存与界面设置都保存在 MongoDB, 重新部署不会丢数据.
+
+**注意**: 由于近期 Telegram 风控等级上升, 请尽可能先使用服务器所在地区的代理在手机上先登陆一次, 再使用 Embykeeper.
+
+若您更习惯命令行模式, 可以使用旧版的 [Docker 部署](https://emby-keeper.github.io/guide/Linux-Docker-部署):
 
 ```bash
 docker run -v $(pwd)/embykeeper:/app --rm -it --net=host embykeeper/embykeeper -i
 ```
 
-**注意**: 由于近期 Telegram 风控等级上升, 请尽可能先使用服务器所在地区的代理在手机上先登陆一次, 再使用 Embykeeper.
-
-您也可以使用 [Docker Compose 部署](https://emby-keeper.github.io/guide/Linux-Docker-Compose-部署).
+您也可以使用旧版的 [Docker Compose 部署](https://emby-keeper.github.io/guide/Linux-Docker-Compose-部署).
 
 更多安装和配置方面的帮助请参考 [**📖 教程文档**](https://emby-keeper.github.io/).
 

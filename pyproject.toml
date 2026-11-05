@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "embykeeper"
-version = "7.6.1"
+version = "8.1.0"
 authors = [
     {name = "jackzzs", email = "jackzzs@outlook.com"},
 ]
@@ -46,9 +46,11 @@ content-type = "text/markdown"
 [project.scripts]
 embykeeper = "embykeeper.cli:app"
 embykeeperweb = "embykeeperweb.app:cli"
+embykeeperapi = "embykeeperapi.app:cli"
 
 [tool.setuptools]
 zip-safe = false
+include-package-data = true
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}

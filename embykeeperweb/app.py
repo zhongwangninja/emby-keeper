@@ -25,7 +25,6 @@ from flask_socketio import SocketIO
 from flask_login import LoginManager, login_user, login_required, current_user
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-
 try:
     import tomllib
 except ImportError:
@@ -253,7 +252,7 @@ def read_and_forward_pty_output():
             try:
                 with app.config["lock"]:
                     if app.config["fd"]:
-                        (data, _, _) = select.select([app.config["fd"]], [], [], 1.0)
+                        data, _, _ = select.select([app.config["fd"]], [], [], 1.0)
                         if data:
                             output = os.read(app.config["fd"], max_read_bytes).decode(errors="ignore")
                             app.config["hist"] += output
@@ -376,6 +375,13 @@ def run(
     wait: bool = False,
     prefix: str = typer.Option("", envvar="EK_BASE_PREFIX", help="Base URL prefix (e.g. /ek)"),
 ):
+    from embykeeperapi.auth import validate_webpass
+
+    try:
+        validate_webpass()
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
     app.config["args"] = ctx.args
     app.config["BASE_PREFIX"] = prefix.rstrip("/")
     set_static_url_path(app, app.config["BASE_PREFIX"])
