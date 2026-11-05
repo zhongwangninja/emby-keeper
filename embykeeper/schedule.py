@@ -5,6 +5,8 @@ import re
 from typing import Callable, Union
 import json
 import hashlib
+import math
+import random
 
 from loguru import logger
 
@@ -67,6 +69,7 @@ class Scheduler:
         sid: str = None,
         description: str = None,
         on_next_time: Callable[[datetime], None] = None,
+        interval_hours: Union[list, tuple] = None,
     ):
         """
         Args:
@@ -77,14 +80,29 @@ class Scheduler:
             sid: 调度器ID, 用于缓存下次执行时间
             description: 调度器描述
             on_next_time: 回调函数, 在计算出下一次执行时间时调用
+            interval_hours: 相对当前时间的小时范围, 如 [48, 60], 不使用日历日和时间范围
         """
         self.func = func
+        self.interval_hours = None
+        if interval_hours is not None:
+            if (
+                not isinstance(interval_hours, (list, tuple))
+                or len(interval_hours) != 2
+                or any(
+                    isinstance(h, bool) or not isinstance(h, (int, float)) or not math.isfinite(h) or h <= 0
+                    for h in interval_hours
+                )
+                or interval_hours[0] > interval_hours[1]
+            ):
+                raise ValueError("interval_hours 必须为两个正数组成的范围, 如 [48, 60], 且下限不能大于上限")
+            self.interval_hours = list(interval_hours)
         if config.debug_cron:
             logger.warning(f"计划任务调试模式下任务开始时间被调整为10秒后: {description}")
             debug_time = (datetime.now() + timedelta(seconds=10)).time()
             self.days = 0
             self.start_time = debug_time
             self.end_time = debug_time
+            self.interval_hours = None
         else:
             self.days = days
             self.start_time = self._parse_time(start_time)
@@ -108,6 +126,8 @@ class Scheduler:
             "start_time": self.start_time.isoformat() if self.start_time else None,
             "end_time": self.end_time.isoformat() if self.end_time else None,
         }
+        if self.interval_hours is not None:
+            config["interval_hours"] = self.interval_hours
         # Convert config to a stable string representation and hash it
         config_str = json.dumps(config, sort_keys=True)
         return hashlib.md5(config_str.encode()).hexdigest()
@@ -143,15 +163,19 @@ class Scheduler:
 
         # Calculate new next_time if needed
         if not next_time:
-            # Calculate interval days
-            if isinstance(self.days, (list, tuple)):
-                interval = self.days[0] + (self.days[1] - self.days[0])
+            if self.interval_hours is not None:
+                hours = random.uniform(*self.interval_hours)
+                next_time = now + timedelta(hours=hours)
             else:
-                interval = self.days
+                # Calculate interval days
+                if isinstance(self.days, (list, tuple)):
+                    interval = self.days[0] + (self.days[1] - self.days[0])
+                else:
+                    interval = self.days
 
-            next_time = next_random_datetime(
-                start_time=self.start_time, end_time=self.end_time, interval_days=interval
-            )
+                next_time = next_random_datetime(
+                    start_time=self.start_time, end_time=self.end_time, interval_days=interval
+                )
 
             # Cache the next execution time with config hash
             if self._cache_key:

@@ -86,13 +86,15 @@ class CheckinerManager:
         for key in keys_to_remove:
             del self._schedulers[key]
 
-    def _has_independent_time_range(self, site_name: str, config_to_use) -> bool:
-        """Check if a site has independent time_range configuration"""
+    def _has_independent_schedule(self, site_name: str, config_to_use) -> bool:
+        """Check if a site has an independent schedule configuration"""
         site_config = config_to_use.get_site_config(site_name)
-        return isinstance(site_config, dict) and "time_range" in site_config
+        return isinstance(site_config, dict) and (
+            "time_range" in site_config or "interval_hours" in site_config
+        )
 
     def _schedule_independent_sites(self, account: TelegramAccount, config_to_use):
-        """Schedule sites with independent time_range configurations"""
+        """Schedule sites with independent schedule configurations"""
         from .dynamic import get_cls, get_names, extract
 
         # Get checkin classes based on account config or global config
@@ -112,20 +114,33 @@ class CheckinerManager:
             else:
                 site_name = cls.__module__.rsplit(".", 1)[-1]
 
-            if self._has_independent_time_range(site_name, config_to_use):
+            if self._has_independent_schedule(site_name, config_to_use):
                 self._schedule_independent_site(account, site_name, config_to_use)
 
     def _schedule_independent_site(self, account: TelegramAccount, site_name: str, config_to_use):
-        """Schedule a site with independent time_range configuration"""
+        """Schedule a site with independent schedule configuration"""
         site_config = config_to_use.get_site_config(site_name)
-        site_time_range = site_config.get("time_range")
-        site_interval_days = site_config.get("interval_days", config_to_use.interval_days)
+        site_interval_hours = site_config.get("interval_hours")
+        if "interval_hours" in site_config:
+            if site_interval_hours is None:
+                raise ValueError(f"站点 {site_name} 的 interval_hours 不能为空")
+            if "time_range" in site_config or "interval_days" in site_config:
+                raise ValueError(
+                    f"站点 {site_name} 的 interval_hours 不能与 time_range 或 interval_days 同时配置"
+                )
 
         phone_masked = TelegramAccount.get_phone_masked(account.phone)
 
         def on_next_time(t: datetime):
+            site_label = site_name
+            interval_info = ""
+            if scheduler.interval_hours is not None:
+                site_label = site_config.get("name") or site_name
+                low, high = scheduler.interval_hours
+                interval_info = f" (间隔 {low:g}～{high:g} 小时)"
             logger.info(
-                f"下一次 \"{phone_masked}\" 账号 {site_name} 站点的签到将在 {t.strftime('%m-%d %H:%M %p')} 进行."
+                f'下一次 "{phone_masked}" 账号 {site_label} 站点的签到将在 '
+                f"{t.strftime('%m-%d %H:%M %p')} 进行{interval_info}."
             )
             date_ctx = RunContext.get_or_create(f"checkiner.date.{t.strftime('%Y%m%d')}")
             account_ctx = RunContext.get_or_create(f"checkiner.account.{account.phone}")
@@ -138,14 +153,20 @@ class CheckinerManager:
         def func(ctx: RunContext):
             return asyncio.create_task(self._run_single_site(ctx, account, site_name))
 
-        scheduler = Scheduler.from_str(
+        scheduler_kwargs = dict(
             func=func,
-            interval_days=site_interval_days,
-            time_range=site_time_range,
             on_next_time=on_next_time,
             description=f"{account.phone} 账号 {site_name} 站点签到定时任务",
             sid=f"checkiner.{account.phone}.{site_name}",
         )
+        if site_interval_hours is not None:
+            scheduler = Scheduler(interval_hours=site_interval_hours, **scheduler_kwargs)
+        else:
+            scheduler = Scheduler.from_str(
+                interval_days=str(site_config.get("interval_days", config_to_use.interval_days)),
+                time_range=site_config.get("time_range"),
+                **scheduler_kwargs,
+            )
 
         # Store scheduler with unique key
         scheduler_key = f"{account.phone}.{site_name}"
@@ -160,7 +181,7 @@ class CheckinerManager:
         # Use account-specific config if available, otherwise use global
         config_to_use = account.checkiner_config or config.checkiner
 
-        # Schedule sites with independent time_range configurations
+        # Schedule sites with independent schedule configurations
         self._schedule_independent_sites(account, config_to_use)
 
         def on_next_time(t: datetime):
@@ -315,9 +336,9 @@ class CheckinerManager:
             else:
                 site_name = cls.__module__.rsplit(".", 1)[-1]
 
-            # Skip sites with independent time_range configurations
-            if self._has_independent_time_range(site_name, config_to_use):
-                log.debug(f"跳过站点 {site_name}, 该站点有独立的 time_range 配置")
+            # Skip sites with independent schedule configurations
+            if self._has_independent_schedule(site_name, config_to_use):
+                log.debug(f"跳过站点 {site_name}, 该站点有独立的调度配置")
                 continue
 
             site_ctx = RunContext.prepare(f"{site_name} 站点签到", parent_ids=ctx.id)
