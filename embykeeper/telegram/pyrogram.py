@@ -364,6 +364,14 @@ class Client(pyrogram.Client):
 
         self.stop_handlers = []
 
+    async def terminate(self, clear_handlers: bool = True):
+        await super().terminate(clear_handlers=clear_handlers)
+
+        # Kurigram 2.2.12 only stops media sessions; auxiliary DC sessions share the same storage.
+        for session in self.sessions.values():
+            await session.stop()
+        self.sessions.clear()
+
     async def authorize(self):
         if self.bot_token:
             return await self.sign_in_bot(self.bot_token)
