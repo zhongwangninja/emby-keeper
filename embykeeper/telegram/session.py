@@ -178,7 +178,13 @@ class ClientsSession:
             async with httpx.AsyncClient(http2=True, proxy=proxy_str) as client:
                 resp = await client.get(url)
                 if resp.status_code == 200:
-                    timestamp = int(resp.content.decode())
+                    try:
+                        timestamp = int(resp.content.decode())
+                    except (ValueError, UnicodeDecodeError):
+                        logger.warning(
+                            "世界时间接口返回了无效的时间戳, 系统时间检测将跳过, 敬请注意. 程序将继续运行."
+                        )
+                        return False
                 else:
                     logger.warning(f"世界时间接口异常, 系统时间检测将跳过, 敬请注意. 程序将继续运行.")
                     return False
